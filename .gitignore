@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.out
+*.rpt
+models/test.inp
+models/stress.inp
+models/app_run.inp
