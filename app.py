@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from swmm_tools import modify_inp, run_model
+from swmm_tools import modify_inp, summarize
 
 st.title("SWMM 우수관로 월류 분석")
 st.write("강우와 유역 조건을 바꿔서 맨홀 월류 여부를 확인합니다.")
@@ -26,12 +26,20 @@ if st.sidebar.button("계산 실행"):
             imperv_add=imperv,
             rough_factor=rough,
         )
-        flow, floods = run_model("models/app_run.inp")
+        result = summarize("models/app_run.inp")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("방류유량", f"{flow:.3f} m³/s")
-    col2.metric("월류 맨홀 수", f"{len(floods)}개")
-    col3.metric("총 월류량", f"{sum(floods.values()):.1f} m³")
+    floods = result["floods"]
+
+    row1 = st.columns(4)
+    row1[0].metric("총 강우량", f"{result['total_rain']:.1f} mm")
+    row1[1].metric("총 유출량", f"{result['total_runoff']:.1f} mm")
+    row1[2].metric("방류구 첨두유량", f"{result['peak_flow']:.3f} m³/s")
+    row1[3].metric("첨두 발생시각", result["peak_time"])
+
+    row2 = st.columns(3)
+    row2[0].metric("최대 관로 충만도", f"{result['max_capacity']:.0f} %")
+    row2[1].metric("월류 노드 수", f"{len(floods)}개")
+    row2[2].metric("총 월류량", f"{sum(floods.values()):.1f} m³")
 
     if floods:
         st.subheader("맨홀별 월류량")
