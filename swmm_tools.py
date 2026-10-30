@@ -1,7 +1,23 @@
-from pyswmm import Simulation, Nodes, Links, Output, LinkSeries, SystemSeries
+import pandas as pd  # 새로 추가
+from pyswmm import Simulation, Nodes, Links, Output, NodeSeries, LinkSeries, SystemSeries  # 바뀜 (NodeSeries 추가)
 
+FT_TO_M = 0.3048  # 새로 추가
 CFS_TO_CMS = 0.0283
 FT3_TO_M3 = 0.0283
+
+# 새로 추가: 화면에 보여줄 이름 → (.out 파일 속성 이름, 환산 계수)
+NODE_VARS = {
+    "수심(m)": ("invert_depth", FT_TO_M),
+    "월류율(m³/s)": ("flooding_losses", CFS_TO_CMS),
+    "유입량(m³/s)": ("total_inflow", CFS_TO_CMS),
+}
+
+LINK_VARS = {
+    "유량(m³/s)": ("flow_rate", CFS_TO_CMS),
+    "수심(m)": ("flow_depth", FT_TO_M),
+    "유속(m/s)": ("flow_velocity", FT_TO_M),
+    "충만도(%)": ("capacity", 100),
+}
 
 
 def modify_inp(src, dst, rain_factor=1.0, imperv_add=0.0, rough_factor=1.0):
@@ -92,6 +108,8 @@ def summarize(inp_file):
         rain = SystemSeries(out).rainfall
         runoff = SystemSeries(out).runoff_flow
         outlet = LinkSeries(out)["C11"].flow_rate
+        node_names = list(out.nodes)  # 새로 추가
+        link_names = list(out.links)  # 새로 추가
 
         max_capacity = 0.0
         for name in out.links:
@@ -121,4 +139,41 @@ def summarize(inp_file):
         "peak_time": peak_label,
         "max_capacity": max_capacity * 100,
         "floods": floods,
+        "nodes": node_names,  # 새로 추가
+        "links": link_names,  # 새로 추가
+        "out_file": out_file,  # 새로 추가
     }
+
+
+# 새로 추가: 노드나 관로 하나의 시간별 값을 표로 꺼내기
+def get_series(out_file, kind, name, labels):
+    if kind == "노드":
+        var_table = NODE_VARS
+    else:
+        var_table = LINK_VARS
+
+    data = {}
+    with Output(out_file) as out:
+        if kind == "노드":
+            series = NodeSeries(out)[name]
+        else:
+            series = LinkSeries(out)[name]
+
+        for label in labels:
+            attr, factor = var_table[label]
+            values = getattr(series, attr)
+
+            converted = {}
+            for t, v in values.items():
+                converted[t] = v * factor
+            data[label] = converted
+
+    df = pd.DataFrame(data)
+
+    times = list(df.index)
+    step = times[1] - times[0]
+    start = times[0] - step
+    df.index = [(t - start).total_seconds() / 60 for t in times]
+    df.index.name = "경과시간(분)"
+
+    return df
