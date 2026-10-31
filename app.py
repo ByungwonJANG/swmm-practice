@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-st.set_page_config(page_title="SWMM 월류 분석", layout="wide")
 from plotly.subplots import make_subplots
 from swmm_tools import (
     modify_inp, summarize, get_series, get_hydrograph,
-    load_all, node_types, period_tables,  # 새로
+    load_all, node_types, period_tables,
     NODE_VARS, LINK_VARS,
 )
+from map_view import read_geometry, draw_network  # 새로
+
+st.set_page_config(page_title="SWMM 월류 분석", layout="wide")
 
 st.title("SWMM 우수관로 월류 분석")
 st.write("강우와 유역 조건을 바꿔서 맨홀 월류 여부를 확인합니다.")
@@ -34,8 +36,9 @@ if st.sidebar.button("계산 실행"):
             rough_factor=rough,
         )
         result = summarize("models/app_run.inp")
-        result["tables"] = load_all(result["out_file"])  # 새로
-        result["types"] = node_types("models/app_run.inp")  # 새로
+        result["tables"] = load_all(result["out_file"])
+        result["types"] = node_types("models/app_run.inp")
+        result["geom"] = read_geometry("models/app_run.inp")  # 새로
         st.session_state["result"] = result
 
 if "result" in st.session_state:
@@ -53,19 +56,24 @@ if "result" in st.session_state:
     row2[1].metric("월류 노드 수", f"{len(floods)}개")
     row2[2].metric("총 월류량", f"{sum(floods.values()):.1f} m³")
 
-    # 새로: 분석 기간 슬라이더
     minutes = result["tables"]["depth"].index
     t_min = float(minutes.min())
     t_max = float(minutes.max())
     start, end = st.slider(
         "분석 기간 (경과시간, 분)",
         t_min, t_max, (t_min, t_max), step=1.0,
+        format="%.0f분",
     )
 
-    tab0, tab1, tab2, tab3 = st.tabs(["수문곡선", "지점별 결과", "결과표", "월류 현황"])  # 바뀜
+    # 바뀜: 결과표를 탭 밖에서 미리 계산 (관망도에서도 쓰기 때문)
+    node_df, link_df = period_tables(result["tables"], start, end, floods, result["types"])
+
+    tab0, tab_map, tab1, tab2, tab3 = st.tabs(
+        ["수문곡선", "관망도", "지점별 결과", "결과표", "월류 현황"]
+    )  # 바뀜
 
     with tab0:
-        hdf = get_hydrograph(result["out_file"]).loc[start:end]  # 바뀜 (.loc 추가)
+        hdf = get_hydrograph(result["out_file"]).loc[start:end]
 
         fig = make_subplots(
             rows=2, cols=1,
@@ -88,6 +96,29 @@ if "result" in st.session_state:
 
         st.plotly_chart(fig)
 
+    # 새로: 관망도 탭
+    with tab_map:
+        mode = st.radio("표시 기준", ["기간 최댓값", "특정 시각"], horizontal=True)
+
+        if mode == "기간 최댓값":
+            link_pct = dict(zip(link_df["관로"], link_df["최대충만도(%)"]))
+            node_depth = dict(zip(node_df["노드"], node_df["최대수심(m)"]))
+            node_flood = dict(zip(node_df["노드"], node_df["월류량(m³)"]))
+            flood_label = "월류량(m³)"
+        else:
+            t = st.slider("시각 (경과시간, 분)", start, end, start, step=1.0, format="%.0f분")
+            tables = result["tables"]
+            link_pct = tables["capacity"].loc[t].to_dict()
+            node_depth = tables["depth"].loc[t].to_dict()
+            node_flood = tables["flood"].loc[t].to_dict()
+            flood_label = "월류율(m³/s)"
+
+        st.caption(
+            "관로 색: 충만도(수심/만관 수심), 파랑→빨강 · "
+            "빨간 원: 월류 발생, 크기는 월류량에 비례 · 마우스를 올리면 값이 보입니다."
+        )
+        st.plotly_chart(draw_network(result["geom"], link_pct, node_depth, node_flood, flood_label))
+
     with tab1:
         kind = st.radio("대상", ["노드", "관로"], horizontal=True)
 
@@ -99,17 +130,14 @@ if "result" in st.session_state:
             labels = st.multiselect("변수", list(LINK_VARS), default=["유량(m³/s)", "충만도(%)"])
 
         if labels:
-            df = get_series(result["out_file"], kind, name, labels).loc[start:end]  # 바뀜 (.loc 추가)
+            df = get_series(result["out_file"], kind, name, labels).loc[start:end]
             for label in labels:
                 st.write(f"**{name} {label}**")
                 st.line_chart(df[label])
         else:
             st.info("변수를 하나 이상 골라 주세요.")
 
-    # 새로: 결과표 탭
     with tab2:
-        node_df, link_df = period_tables(result["tables"], start, end, floods, result["types"])
-
         st.caption(
             f"분석 기간 {start:.0f}~{end:.0f}분의 1분 간격 기록값 기준입니다. "
             "월류량은 전체 기간이면 SWMM 요약값, 일부 기간이면 월류율을 시간에 대해 더한 값입니다."
