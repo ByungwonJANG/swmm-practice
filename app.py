@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-from swmm_tools import modify_inp, summarize, get_series, NODE_VARS, LINK_VARS
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from swmm_tools import modify_inp, summarize, get_series, get_hydrograph, NODE_VARS, LINK_VARS
 
 st.title("SWMM 우수관로 월류 분석")
 st.write("강우와 유역 조건을 바꿔서 맨홀 월류 여부를 확인합니다.")
@@ -43,8 +45,31 @@ if "result" in st.session_state:
     row2[1].metric("월류 노드 수", f"{len(floods)}개")
     row2[2].metric("총 월류량", f"{sum(floods.values()):.1f} m³")
 
-    tab1, tab2 = st.tabs(["지점별 결과", "월류 현황"])
+    tab0, tab1, tab2 = st.tabs(["수문곡선", "지점별 결과", "월류 현황"])
 
+    with tab0:
+        hdf = get_hydrograph(result["out_file"])
+
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.3, 0.7],
+            vertical_spacing=0.05,
+        )
+        fig.add_trace(
+            go.Bar(x=hdf.index, y=hdf["강우강도(mm/hr)"], name="강우강도", marker_color="#4a90d9"),
+            row=1, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(x=hdf.index, y=hdf["방류구 유량(m³/s)"], name="방류구 O1", line=dict(color="#5aaee8")),
+            row=2, col=1,
+        )
+        fig.update_yaxes(autorange="reversed", title_text="강우강도 (mm/hr)", row=1, col=1)
+        fig.update_yaxes(title_text="유량 (m³/s)", row=2, col=1)
+        fig.update_xaxes(title_text="경과시간 (분)", row=2, col=1)
+        fig.update_layout(height=550, bargap=0, legend=dict(orientation="h", y=1.08))
+
+        st.plotly_chart(fig)
     with tab1:
         kind = st.radio("대상", ["노드", "관로"], horizontal=True)
 

@@ -177,3 +177,30 @@ def get_series(out_file, kind, name, labels):
     df.index.name = "경과시간(분)"
 
     return df
+
+
+def get_hydrograph(out_file):
+    with Output(out_file) as out:
+        rain = SystemSeries(out).rainfall
+        outflow = NodeSeries(out)["O1"].total_inflow
+
+    rain_mm = {}
+    for t, v in rain.items():
+        rain_mm[t] = v * 25.4
+
+    outflow_cms = {}
+    for t, v in outflow.items():
+        outflow_cms[t] = v * CFS_TO_CMS
+
+    df = pd.DataFrame({
+        "강우강도(mm/hr)": rain_mm,
+        "방류구 유량(m³/s)": outflow_cms,
+    })
+
+    times = list(df.index)
+    step = times[1] - times[0]
+    start = times[0] - step
+    df.index = [(t - start).total_seconds() / 60 for t in times]
+    df.index.name = "경과시간(분)"
+
+    return df

@@ -1,3 +1,4 @@
 pyswmm
 streamlit
 pandas
+plotly
