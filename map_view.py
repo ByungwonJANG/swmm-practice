@@ -100,6 +100,9 @@ def draw_network(geom, link_pct, node_depth, node_flood, flood_label):
 
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False, scaleanchor="x", scaleratio=1)
-    fig.update_layout(height=650, plot_bgcolor="white", margin=dict(l=10, r=10, t=10, b=10))
+    fig.update_layout(
+        height=650, plot_bgcolor="white", margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(orientation="h", x=0, y=1.05),
+    )
 
     return fig
