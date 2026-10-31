@@ -2,8 +2,8 @@ import pandas as pd  # 새로 추가
 from pyswmm import Simulation, Nodes, Links, Output, NodeSeries, LinkSeries, SystemSeries  # 바뀜 (NodeSeries 추가)
 
 FT_TO_M = 0.3048  # 새로 추가
-CFS_TO_CMS = 0.0283
-FT3_TO_M3 = 0.0283
+CFS_TO_CMS = 0.0283168
+FT3_TO_M3 = 0.0283168
 
 # 새로 추가: 화면에 보여줄 이름 → (.out 파일 속성 이름, 환산 계수)
 NODE_VARS = {
@@ -204,3 +204,107 @@ def get_hydrograph(out_file):
     df.index.name = "경과시간(분)"
 
     return df
+
+
+def to_minutes(df):
+    times = list(df.index)
+    step = times[1] - times[0]
+    start = times[0] - step
+    df.index = [(t - start).total_seconds() / 60 for t in times]
+    df.index.name = "경과시간(분)"
+    return df
+
+
+def load_all(out_file):
+    depth, flood, flow, capacity = {}, {}, {}, {}
+
+    with Output(out_file) as out:
+        for name in out.nodes:
+            series = NodeSeries(out)[name]
+            depth[name] = series.invert_depth
+            flood[name] = series.flooding_losses
+
+        for name in out.links:
+            series = LinkSeries(out)[name]
+            flow[name] = series.flow_rate
+            capacity[name] = series.capacity
+
+    return {
+        "depth": to_minutes(pd.DataFrame(depth) * FT_TO_M),
+        "flood": to_minutes(pd.DataFrame(flood) * CFS_TO_CMS),
+        "flow": to_minutes(pd.DataFrame(flow) * CFS_TO_CMS),
+        "capacity": to_minutes(pd.DataFrame(capacity) * 100),
+    }
+
+
+def node_types(inp_file):
+    type_names = {
+        "[JUNCTIONS]": "JUNCTION",
+        "[OUTFALLS]": "OUTFALL",
+        "[STORAGE]": "STORAGE",
+        "[DIVIDERS]": "DIVIDER",
+    }
+
+    with open(inp_file, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    section = ""
+    types = {}
+
+    for line in lines:
+        text = line.strip()
+        if text.startswith("["):
+            section = text.upper()
+            continue
+        if not text or text.startswith(";"):
+            continue
+        if section in type_names:
+            types[line.split()[0]] = type_names[section]
+
+    return types
+
+
+def minute_label(m):
+    m = int(round(m))
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def period_tables(tables, start, end, floods, types):
+    depth = tables["depth"].loc[start:end]
+    flood = tables["flood"].loc[start:end]
+    flow = tables["flow"].loc[start:end]
+    capacity = tables["capacity"].loc[start:end]
+
+    if depth.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    full_index = tables["depth"].index
+    full = start <= full_index.min() and end >= full_index.max()
+    step_s = (full_index[1] - full_index[0]) * 60
+
+    node_rows = []
+    for name in depth.columns:
+        if full:
+            volume = floods.get(name, 0.0)
+        else:
+            volume = flood[name].sum() * step_s
+
+        node_rows.append({
+            "노드": name,
+            "유형": types.get(name, ""),
+            "최대수심(m)": round(depth[name].max(), 3),
+            "최대수심 시각": minute_label(depth[name].idxmax()),
+            "월류량(m³)": round(volume, 1),
+            "최대 월류율(m³/s)": round(flood[name].max(), 3),
+        })
+
+    link_rows = []
+    for name in flow.columns:
+        link_rows.append({
+            "관로": name,
+            "최대유량(m³/s)": round(flow[name].max(), 3),
+            "최대유량 시각": minute_label(flow[name].idxmax()),
+            "최대충만도(%)": round(capacity[name].max(), 1),
+        })
+
+    return pd.DataFrame(node_rows), pd.DataFrame(link_rows)
