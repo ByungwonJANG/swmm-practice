@@ -7,9 +7,91 @@ from swmm_tools import (
     load_all, node_types, period_tables,
     NODE_VARS, LINK_VARS,
 )
-from map_view import read_geometry, draw_network  # 새로
+from map_view import read_geometry, draw_network
 
 st.set_page_config(page_title="SWMM 월류 분석", layout="wide")
+
+FILES = {
+    "2년": "models/scenario_2yr.inp",
+    "10년": "models/scenario_10yr.inp",
+    "100년": "models/scenario_100yr.inp",
+}
+
+# 새로: 기본 시나리오 5개 (이름, 빈도, 강우배율, 불투수율 증가, 조도배율)
+DEFAULTS = [
+    ("2yr 원설계", "2년", 1.0, 0, 1.0),
+    ("10yr 원설계", "10년", 1.0, 0, 1.0),
+    ("100yr 원설계", "100년", 1.0, 0, 1.0),
+    ("100yr 기후변화 ×1.3", "100년", 1.3, 0, 1.0),
+    ("100yr ×1.3 · 불투수 +20%p · 조도 ×1.3", "100년", 1.3, 20, 1.3),
+]
+MAX_SAVED = 5
+
+
+# 새로: 시나리오 하나 계산하기
+def make_entry(name, freq, rain, imperv, rough, work_inp):
+    modify_inp(FILES[freq], work_inp, rain_factor=rain, imperv_add=imperv, rough_factor=rough)
+    res = summarize(work_inp)
+    return {
+        "name": name,
+        "result": res,
+        "hydro": get_hydrograph(res["out_file"]),
+    }
+
+
+# 새로: 시나리오를 목록에 저장하기
+def save_entry(entry):
+    saved = st.session_state.setdefault("saved", [])
+    saved[:] = [s for s in saved if s["name"] != entry["name"]]
+    saved.append(entry)
+    if len(saved) > MAX_SAVED:
+        saved.pop(0)
+
+
+# 새로: 시나리오 비교 화면
+def show_comparison(saved):
+    rows = []
+    for s in saved:
+        r = s["result"]
+        fl = r["floods"]
+        rows.append({
+            "시나리오": s["name"],
+            "총 강우량(mm)": round(r["total_rain"], 1),
+            "총 유출량(mm)": round(r["total_runoff"], 1),
+            "첨두유량(m³/s)": round(r["peak_flow"], 3),
+            "첨두시각": r["peak_time"],
+            "최대충만도(%)": round(r["max_capacity"]),
+            "월류 노드 수": len(fl),
+            "총 월류량(m³)": round(sum(fl.values()), 1),
+        })
+    df = pd.DataFrame(rows)
+
+    st.dataframe(df, hide_index=True)
+    st.download_button(
+        "시나리오 비교 CSV",
+        df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="scenario_compare.csv",
+        mime="text/csv",
+    )
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        fig = go.Figure(go.Bar(x=df["시나리오"], y=df["총 월류량(m³)"], marker_color="#d7191c"))
+        fig.update_layout(title="시나리오별 총 월류량 (m³)", height=420)
+        st.plotly_chart(fig)
+
+    with col_b:
+        fig = go.Figure()
+        for s in saved:
+            h = s["hydro"]
+            fig.add_trace(go.Scatter(x=h.index, y=h["방류구 유량(m³/s)"], name=s["name"]))
+        fig.update_layout(
+            title="방류구 유량 비교 (m³/s)", height=420,
+            xaxis_title="경과시간 (분)", legend=dict(orientation="h", y=-0.25),
+        )
+        st.plotly_chart(fig)
+
 
 st.title("SWMM 우수관로 월류 분석")
 st.write("강우와 유역 조건을 바꿔서 맨홀 월류 여부를 확인합니다.")
@@ -20,16 +102,13 @@ rain = st.sidebar.slider("강우 할증 배율", 1.0, 2.0, 1.0, 0.1)
 imperv = st.sidebar.slider("불투수율 증가 (%p)", 0, 50, 0, 5)
 rough = st.sidebar.slider("조도계수 배율", 1.0, 2.0, 1.0, 0.1)
 
-files = {
-    "2년": "models/scenario_2yr.inp",
-    "10년": "models/scenario_10yr.inp",
-    "100년": "models/scenario_100yr.inp",
-}
+auto_name = f"{scenario} ×{rain:.1f} / +{imperv}%p / n×{rough:.1f}"  # 새로
+scen_name = st.sidebar.text_input("시나리오 이름 (비우면 자동)", "")  # 새로
 
-if st.sidebar.button("계산 실행"):
+if st.sidebar.button("계산 실행", type="primary"):  # 바뀜 (빨간 버튼)
     with st.spinner("SWMM 계산 중..."):
         modify_inp(
-            files[scenario],
+            FILES[scenario],
             "models/app_run.inp",
             rain_factor=rain,
             imperv_add=imperv,
@@ -38,8 +117,31 @@ if st.sidebar.button("계산 실행"):
         result = summarize("models/app_run.inp")
         result["tables"] = load_all(result["out_file"])
         result["types"] = node_types("models/app_run.inp")
-        result["geom"] = read_geometry("models/app_run.inp")  # 새로
+        result["geom"] = read_geometry("models/app_run.inp")
         st.session_state["result"] = result
+
+        # 새로: 계산한 결과를 비교 목록에도 저장
+        save_entry({
+            "name": scen_name or auto_name,
+            "result": result,
+            "hydro": get_hydrograph(result["out_file"]),
+        })
+
+# 새로: 일괄 실행과 저장 목록
+st.sidebar.divider()
+if st.sidebar.button("기본 시나리오 일괄 실행"):
+    with st.spinner("기본 시나리오 5개 계산 중..."):
+        for name, freq, r, i, n in DEFAULTS:
+            save_entry(make_entry(name, freq, r, i, n, "models/batch_run.inp"))
+
+saved = st.session_state.get("saved", [])
+st.sidebar.caption(f"저장됨 {len(saved)}/{MAX_SAVED}")
+for idx, s in enumerate(saved):
+    c1, c2 = st.sidebar.columns([5, 1])
+    c1.write(s["name"])
+    if c2.button("✕", key=f"del_{idx}"):
+        saved.pop(idx)
+        st.rerun()
 
 if "result" in st.session_state:
     result = st.session_state["result"]
@@ -65,12 +167,11 @@ if "result" in st.session_state:
         format="%.0f분",
     )
 
-    # 바뀜: 결과표를 탭 밖에서 미리 계산 (관망도에서도 쓰기 때문)
     node_df, link_df = period_tables(result["tables"], start, end, floods, result["types"])
 
-    tab0, tab_map, tab1, tab2, tab3 = st.tabs(
-        ["수문곡선", "관망도", "지점별 결과", "결과표", "월류 현황"]
-    )  # 바뀜
+    tab0, tab_map, tab1, tab2, tab_cmp = st.tabs(
+        ["수문곡선", "관망도", "지점별 결과", "결과표", "시나리오 비교"]
+    )  # 바뀜 (월류 현황 → 시나리오 비교)
 
     with tab0:
         hdf = get_hydrograph(result["out_file"]).loc[start:end]
@@ -96,7 +197,6 @@ if "result" in st.session_state:
 
         st.plotly_chart(fig)
 
-    # 새로: 관망도 탭
     with tab_map:
         mode = st.radio("표시 기준", ["기간 최댓값", "특정 시각"], horizontal=True)
 
@@ -165,13 +265,16 @@ if "result" in st.session_state:
                 mime="text/csv",
             )
 
-    with tab3:
-        if floods:
-            df = pd.DataFrame(list(floods.items()), columns=["맨홀", "월류량(m³)"])
-            df = df.sort_values("월류량(m³)", ascending=False)
-            st.dataframe(df, hide_index=True)
-            st.bar_chart(df, x="맨홀", y="월류량(m³)")
+    # 새로: 시나리오 비교 탭
+    with tab_cmp:
+        if saved:
+            show_comparison(saved)
         else:
-            st.success("월류가 발생하지 않았습니다.")
+            st.info("저장된 시나리오가 없습니다.")
+
+# 새로: 계산 실행 없이 일괄 실행만 한 경우에도 비교 화면 보여주기
+elif saved:
+    st.subheader("시나리오 비교")
+    show_comparison(saved)
 else:
-    st.info("왼쪽에서 조건을 고르고 [계산 실행]을 눌러 주세요.")
+    st.info("왼쪽에서 조건을 고르고 [계산 실행]을 누르거나, [기본 시나리오 일괄 실행]을 눌러 주세요.")

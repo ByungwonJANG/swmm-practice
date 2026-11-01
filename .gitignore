@@ -5,3 +5,4 @@ __pycache__/
 models/test.inp
 models/stress.inp
 models/app_run.inp
+models/batch_run.inp
